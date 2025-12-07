@@ -66,6 +66,8 @@
 
 "Establish a reverse connection to a listening VNC viewer or repeater without opening a server port. This is useful for bypassing firewalls or NAT." = "建立到监听的 VNC 查看器或中继器的反向连接，而无需打开服务器端口。这对于绕过防火墙或 NAT 非常有用。";
 
+"Export Certificate…" = "导出证书…";
+
 "Frame Rate" = "帧率";
 
 "Full-access Password" = "完全访问密码";
@@ -73,6 +75,8 @@
 "Fullscreen Threshold (%)" = "全屏阈值（%）";
 
 "General" = "通用";
+
+"Generate CA…" = "生成根证书…";
 
 "HTTP / WebSockets" = "HTTP / WebSockets";
 
@@ -129,6 +133,8 @@
 "Repeater" = "中继器";
 
 "Repeater ID" = "中继器 ID";
+
+"Reset to Defaults" = "还原为默认值";
 
 "Respring" = "注销";
 
@@ -187,6 +193,8 @@
 "This project is licensed under GPLv2. Author: Lessica." = "本项目使用 GPLv2 许可证发布。作者：Lessica。";
 
 "Tile Size (px)" = "瓦片大小（像素）";
+
+"To unblock previously blocked clients, restart the VNC service. The temporary block list is cleared on service restart." = "要解封之前被封禁的客户端，请重启 VNC 服务。临时封禁列表会在服务重启时清空。";
 
 "TrollVNC" = "TrollVNC";
 
