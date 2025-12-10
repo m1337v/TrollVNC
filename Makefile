@@ -1,4 +1,4 @@
-export PACKAGE_VERSION := 2.7
+export PACKAGE_VERSION := 2.8-1
 export THEOS_PACKAGE_SCHEME
 
 ifeq ($(THEOS_DEVICE_SIMULATOR),1)
@@ -65,7 +65,7 @@ else
 trollvncserver_LIBRARIES += crypto
 trollvncserver_LIBRARIES += lzo2
 trollvncserver_LIBRARIES += turbojpeg
-trollvncserver_LIBRARIES += png16
+trollvncserver_LIBRARIES += png18
 trollvncserver_LIBRARIES += sasl2
 trollvncserver_LIBRARIES += ssl
 trollvncserver_LIBRARIES += vncserver

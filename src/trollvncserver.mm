@@ -63,7 +63,8 @@
 
 static BOOL gEnabled = YES;
 static int gPort = 5901;
-static int gTvCtlPort = 0; // port for control connections (0 = disabled)
+static int gTvCtlPort = 0;        // port for control connections (0 = disabled)
+static NSString *gBindHost = nil; // optional bind address from CLI/config
 static NSString *gDesktopName = @"TrollVNC";
 static BOOL gViewOnly = NO;
 static double gKeepAliveSec = 0.0; // 15..86400
@@ -132,6 +133,51 @@ static BOOL gUserSingleNotifsEnabled = YES;
 
 // Blocked hosts (temporary blacklist)
 static NSMutableSet<NSString *> *gBlockedHosts = nil;
+
+typedef NS_ENUM(uint8_t, TVBindHostKind) {
+    kTVBindHostKindNone = 0,
+    kTVBindHostKindIPv4,
+    kTVBindHostKindIPv6,
+    kTVBindHostKindInvalid,
+};
+
+static TVBindHostKind tvClassifyBindHost(NSString *host, in_addr_t *outIPv4, struct in6_addr *outIPv6) {
+    if (outIPv4)
+        *outIPv4 = 0;
+    if (outIPv6)
+        memset(outIPv6, 0, sizeof(*outIPv6));
+
+    if (!host || host.length == 0)
+        return kTVBindHostKindNone;
+
+    const char *cstr = [host UTF8String];
+    if (!cstr || *cstr == '\0')
+        return kTVBindHostKindNone;
+
+    struct in_addr v4;
+    if (inet_pton(AF_INET, cstr, &v4) == 1) {
+        if (outIPv4)
+            *outIPv4 = v4.s_addr;
+        return kTVBindHostKindIPv4;
+    }
+
+    char addrBuf[INET6_ADDRSTRLEN + 1];
+    const char *pct = strchr(cstr, '%');
+    size_t copyLen = pct ? (size_t)(pct - cstr) : strlen(cstr);
+    if (copyLen >= sizeof(addrBuf))
+        copyLen = sizeof(addrBuf) - 1;
+    memcpy(addrBuf, cstr, copyLen);
+    addrBuf[copyLen] = '\0';
+
+    struct in6_addr v6;
+    if (inet_pton(AF_INET6, addrBuf, &v6) == 1) {
+        if (outIPv6)
+            *outIPv6 = v6;
+        return kTVBindHostKindIPv6;
+    }
+
+    return kTVBindHostKindInvalid;
+}
 
 NS_INLINE BOOL isRepeaterEnabled(void) {
     return gRepeaterMode > 0 && gRepeaterHost != NULL && gRepeaterHost[0] != '\0' && gRepeaterPort > 0;
@@ -250,6 +296,7 @@ static void printUsageAndExit(const char *prog) {
     fprintf(stderr, "Usage: %s [-p port] [-n name] [options]\n\n", prog);
 
     fprintf(stderr, "Basic:\n");
+    fprintf(stderr, "  -b host    Bind host address (IPv4/IPv6 literal, default to all)\n");
     fprintf(stderr, "  -p port    VNC TCP port (default: %d)\n", gPort);
     fprintf(stderr, "  -c port    Client management TCP port (0=off, default: 0)\n");
     fprintf(stderr, "  -n name    Desktop name (default: %s)\n", [gDesktopName UTF8String]);
@@ -415,6 +462,17 @@ static void parseDaemonOptions(void) {
         gDesktopName = desktopName;
     } else if (desktopName) {
         TVLog(@"-daemon: DesktopName is empty; using default '%@'", gDesktopName);
+    }
+
+    NSString *bindHost = [prefs objectForKey:@"BindHost"];
+    if ([bindHost isKindOfClass:[NSString class]]) {
+        if (bindHost.length > 0) {
+            gBindHost = bindHost;
+            TVLog(@"-daemon: BindHost=%@", gBindHost);
+        } else {
+            gBindHost = nil;
+            TVLog(@"-daemon: BindHost empty; cleared to default (any)");
+        }
     }
 
     // Numbers
@@ -684,10 +742,6 @@ static void parseDaemonOptions(void) {
         if (![httpDir hasPrefix:@"/"]) {
             TVLog(@"-daemon: HttpDir must be absolute: %@ (ignored)", httpDir);
         } else {
-            if (gHttpDirOverride) {
-                free(gHttpDirOverride);
-                gHttpDirOverride = NULL;
-            }
             gHttpDirOverride = strdup(httpDir.fileSystemRepresentation);
         }
     }
@@ -696,10 +750,6 @@ static void parseDaemonOptions(void) {
         if (![sslCert hasPrefix:@"/"]) {
             TVLog(@"-daemon: SslCertFile must be absolute: %@ (ignored)", sslCert);
         } else {
-            if (gSslCertPath) {
-                free(gSslCertPath);
-                gSslCertPath = NULL;
-            }
             gSslCertPath = strdup(sslCert.fileSystemRepresentation);
         }
     }
@@ -708,10 +758,6 @@ static void parseDaemonOptions(void) {
         if (![sslKey hasPrefix:@"/"]) {
             TVLog(@"-daemon: SslKeyFile must be absolute: %@ (ignored)", sslKey);
         } else {
-            if (gSslKeyPath) {
-                free(gSslKeyPath);
-                gSslKeyPath = NULL;
-            }
             gSslKeyPath = strdup(sslKey.fileSystemRepresentation);
         }
     }
@@ -779,10 +825,6 @@ static void parseDaemonOptions(void) {
         // Backward-compat: accept separate ReverseHost/ReversePort if present
         NSString *revHost = [prefs objectForKey:@"ReverseHost"];
         if ([revHost isKindOfClass:[NSString class]] && revHost.length > 0) {
-            if (gRepeaterHost) {
-                free(gRepeaterHost);
-                gRepeaterHost = NULL;
-            }
             gRepeaterHost = strdup(revHost.UTF8String);
         }
         NSNumber *revPortN = [prefs objectForKey:@"ReversePort"];
@@ -829,11 +871,12 @@ static void parseDaemonOptions(void) {
     // Single-line summary using NSMutableString; include reverse-connection fields and new options
     NSMutableString *cfg = [NSMutableString stringWithFormat:@"-daemon: cfg "];
     [cfg appendFormat:@"name='%@' ", gDesktopName];
+    [cfg appendFormat:@"bindHost='%@' ", gBindHost];
     [cfg appendFormat:@"port=%d http=%d ", gPort, gHttpPort];
 
     // Reverse connection summary
     const char *revModeStr = isRepeaterEnabled() ? (gRepeaterMode == 2 ? "repeater" : "viewer") : "off";
-    NSString *revHostStr = gRepeaterHost ? [NSString stringWithUTF8String:gRepeaterHost] : @"(null)";
+    NSString *revHostStr = gRepeaterHost ? [NSString stringWithUTF8String:gRepeaterHost] : nil;
     [cfg appendFormat:@"reverse=%s host=%@ port=%d id=%d ", revModeStr, revHostStr, gRepeaterPort, gRepeaterId];
 
     // Core feature flags
@@ -856,9 +899,9 @@ static void parseDaemonOptions(void) {
 
     // Auth and paths
     [cfg appendFormat:@"auth(full=%@,view=%@,8char) ", hasFullPwd ? @"on" : @"off", hasViewPwd ? @"on" : @"off"];
-    NSString *dirStr = gHttpDirOverride ? [NSString stringWithUTF8String:gHttpDirOverride] : @"(null)";
-    NSString *certStr = gSslCertPath ? [NSString stringWithUTF8String:gSslCertPath] : @"(null)";
-    NSString *keyStr = gSslKeyPath ? [NSString stringWithUTF8String:gSslKeyPath] : @"(null)";
+    NSString *dirStr = gHttpDirOverride ? [NSString stringWithUTF8String:gHttpDirOverride] : nil;
+    NSString *certStr = gSslCertPath ? [NSString stringWithUTF8String:gSslCertPath] : nil;
+    NSString *keyStr = gSslKeyPath ? [NSString stringWithUTF8String:gSslKeyPath] : nil;
     [cfg appendFormat:@"dir=%@ cert=%@ key=%@", dirStr, certStr, keyStr];
 
     TVLog(@"%@", cfg);
@@ -1051,10 +1094,19 @@ static void parseCLI(int argc, const char *argv[]) {
 #pragma clang diagnostic pop
 
     int opt;
-    const char *optstr = "p:n:vA:c:C:s:F:d:Q:t:P:R:aW:w:NM:KU:O:I:i:H:D:e:k:B:T:Vh";
+    const char *optstr = "p:b:n:vA:c:C:s:F:d:Q:t:P:R:aW:w:NM:KU:O:I:i:H:D:e:k:B:T:Vh";
     optind = 1;
     while ((opt = getopt(__argc2, __argv2.data(), optstr)) != -1) {
         switch (opt) {
+        case 'b': {
+            if (!optarg || !*optarg) {
+                TVPrintError("-b requires a non-empty host name or address");
+                exit(EXIT_FAILURE);
+            }
+            gBindHost = [NSString stringWithUTF8String:optarg];
+            TVLog(@"CLI: Bind host set to '%@'", gBindHost);
+            break;
+        }
         case 'p': {
             long port = strtol(optarg, NULL, 10);
             if (port <= 0 || port > 65535) {
@@ -1373,15 +1425,7 @@ static void parseCLI(int argc, const char *argv[]) {
                 TVPrintError("Invalid httpDir path for -D: %s (must be absolute)", path);
                 exit(EXIT_FAILURE);
             }
-            if (gHttpDirOverride) {
-                free(gHttpDirOverride);
-                gHttpDirOverride = NULL;
-            }
             gHttpDirOverride = strdup(path);
-            if (!gHttpDirOverride) {
-                TVPrintError("Failed to duplicate httpDir path");
-                exit(EXIT_FAILURE);
-            }
             TVLog(@"CLI: HTTP dir override set to %s (-D)", path);
             break;
         }
@@ -1391,15 +1435,7 @@ static void parseCLI(int argc, const char *argv[]) {
                 TVPrintError("Invalid value for -e (sslcertfile)");
                 exit(EXIT_FAILURE);
             }
-            if (gSslCertPath) {
-                free(gSslCertPath);
-                gSslCertPath = NULL;
-            }
             gSslCertPath = strdup(path);
-            if (!gSslCertPath) {
-                TVPrintError("Failed to duplicate sslcertfile path");
-                exit(EXIT_FAILURE);
-            }
             TVLog(@"CLI: SSL cert file set (-e %s)", path);
             break;
         }
@@ -1409,15 +1445,7 @@ static void parseCLI(int argc, const char *argv[]) {
                 TVPrintError("Invalid value for -k (sslkeyfile)");
                 exit(EXIT_FAILURE);
             }
-            if (gSslKeyPath) {
-                free(gSslKeyPath);
-                gSslKeyPath = NULL;
-            }
             gSslKeyPath = strdup(path);
-            if (!gSslKeyPath) {
-                TVPrintError("Failed to duplicate sslkeyfile path");
-                exit(EXIT_FAILURE);
-            }
             TVLog(@"CLI: SSL key file set (-k %s)", path);
             break;
         }
@@ -1984,10 +2012,6 @@ NS_INLINE void maybeResizeFramebufferForRotation(int rotQ) {
     void *newFront = calloc(1, newFBSize);
     void *newBack = calloc(1, newFBSize);
     if (!newFront || !newBack) {
-        if (newFront)
-            free(newFront);
-        if (newBack)
-            free(newBack);
         TVPrintError("Failed to allocate required frame buffers");
         exit(EXIT_FAILURE);
     }
@@ -4472,6 +4496,29 @@ static void setupRfbScreen(int argc, const char *argv[]) {
     gScreen->port = gPort;
     gScreen->ipv6port = gPort;
 
+    // Server bind addresses
+    in_addr_t v4Addr = INADDR_ANY;
+    struct in6_addr v6Addr;
+    memset(&v6Addr, 0, sizeof(v6Addr));
+
+    TVBindHostKind hostKind = tvClassifyBindHost(gBindHost, &v4Addr, &v6Addr);
+    if (hostKind == kTVBindHostKindIPv4) {
+        gScreen->listenInterface = v4Addr;
+    } else if (hostKind == kTVBindHostKindIPv6) {
+        char ifaceBuf[INET6_ADDRSTRLEN];
+        const char *iface = inet_ntop(AF_INET6, &v6Addr, ifaceBuf, sizeof(ifaceBuf));
+        if (!iface) {
+            TVPrintError("Failed to normalize IPv6 bind host");
+            exit(EXIT_FAILURE);
+        }
+        gScreen->listen6Interface = strdup(iface);
+    } else if (hostKind == kTVBindHostKindInvalid && gBindHost) {
+        TVPrintError("Invalid host address: %s", [gBindHost UTF8String]);
+        exit(EXIT_FAILURE);
+    } else {
+        // Do nothing; default ANY
+    }
+
     // Event handlers
     gScreen->newClientHook = newClientHook;
     gScreen->displayHook = displayHook;
@@ -4536,27 +4583,15 @@ static void setupRfbClassicAuthentication(void) {
         // Vector size = number of passwords + 1 for NULL terminator
         int vecCount = fullCount + viewCount + 1;
         gAuthPasswdVec = (char **)calloc((size_t)vecCount, sizeof(char *));
-        if (!gAuthPasswdVec) {
-            TVPrintError("Failed to allocate memory for password vector");
-            exit(EXIT_FAILURE);
-        }
 
         int idx = 0;
         if (fullCount) {
             gAuthPasswdStr = strdup(envPwd);
-            if (!gAuthPasswdStr) {
-                TVPrintError("Failed to allocate memory for full-access password");
-                exit(EXIT_FAILURE);
-            }
             gAuthPasswdVec[idx++] = gAuthPasswdStr;
         }
 
         if (viewCount) {
             gAuthViewOnlyPasswdStr = strdup(envViewPwd);
-            if (!gAuthViewOnlyPasswdStr) {
-                TVPrintError("Failed to allocate memory for view-only password");
-                exit(EXIT_FAILURE);
-            }
             gAuthPasswdVec[idx++] = gAuthViewOnlyPasswdStr;
         }
 
@@ -4629,13 +4664,9 @@ static void setupRfbHttpServer(void) {
 
     // SSL certificate and key (optional)
     if (gSslCertPath && *gSslCertPath) {
-        if (gScreen->sslcertfile)
-            free(gScreen->sslcertfile);
         gScreen->sslcertfile = strdup(gSslCertPath);
     }
     if (gSslKeyPath && *gSslKeyPath) {
-        if (gScreen->sslkeyfile)
-            free(gScreen->sslkeyfile);
         gScreen->sslkeyfile = strdup(gSslKeyPath);
     }
 }
