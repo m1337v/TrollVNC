@@ -83,7 +83,7 @@
     content.badge = @(badgeCount);
 #endif
 
-    if (@available(iOS 15.0, *)) {
+    if (@available(iOS 15, *)) {
         if ([content respondsToSelector:@selector(setInterruptionLevel:)])
             content.interruptionLevel = UNNotificationInterruptionLevelPassive;
     }
@@ -115,7 +115,7 @@
     content.userInfo = userInfo;
     content.sound = [UNNotificationSound defaultSound];
 
-    if (@available(iOS 15.0, *)) {
+    if (@available(iOS 15, *)) {
         if ([content respondsToSelector:@selector(setInterruptionLevel:)])
             content.interruptionLevel = UNNotificationInterruptionLevelActive;
     }
@@ -152,12 +152,16 @@
 #if !TARGET_IPHONE_SIMULATOR
 #ifdef THEBOOTSTRAP
     if (@available(iOS 16, *)) {
-        [mNotificationCenter setBadgeCount:0
-                     withCompletionHandler:^(NSError *_Nullable error) {
-                         if (error) {
-                             TVLog(@"Error setting badge count: %@", error);
-                         }
-                     }];
+        if ([mNotificationCenter respondsToSelector:@selector(setBadgeCount:withCompletionHandler:)]) {
+            [mNotificationCenter setBadgeCount:0
+                         withCompletionHandler:^(NSError *_Nullable error) {
+                             if (error) {
+                                 TVLog(@"Error setting badge count: %@", error);
+                             }
+                         }];
+        } else {
+            [self updateSingleBannerWithContent:@"" badgeCount:0 userInfo:nil];
+        }
     } else {
         [self updateSingleBannerWithContent:@"" badgeCount:0 userInfo:nil];
     }

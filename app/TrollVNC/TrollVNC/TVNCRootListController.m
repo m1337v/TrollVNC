@@ -122,6 +122,35 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
     return ipv4 ?: ipv6; // prefer IPv4
 }
 
+NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
+    if (!host)
+        return YES;
+
+    NSString *trimmed = [host stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0)
+        return YES; // Empty means bind any interface
+
+    const char *cstr = trimmed.UTF8String;
+    if (!cstr || cstr[0] == '\0')
+        return YES;
+
+    struct in_addr v4;
+    if (inet_pton(AF_INET, cstr, &v4) == 1)
+        return YES;
+
+    // Allow optional IPv6 scope suffix (e.g. fe80::1%en0)
+    char addrBuf[INET6_ADDRSTRLEN + 1] = {0};
+    const char *pct = strchr(cstr, '%');
+    size_t copyLen = pct ? (size_t)(pct - cstr) : strlen(cstr);
+    if (copyLen >= sizeof(addrBuf))
+        copyLen = sizeof(addrBuf) - 1;
+    memcpy(addrBuf, cstr, copyLen);
+    addrBuf[copyLen] = '\0';
+
+    struct in6_addr v6;
+    return inet_pton(AF_INET6, addrBuf, &v6) == 1;
+}
+
 @interface TVNCRootListController ()
 
 @property(nonatomic, strong) nw_path_monitor_t monitor;
@@ -410,9 +439,11 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
     // Validate ports before restarting service, using -readPreferenceValue: to get live edits
     int port = 5901;
     int httpPort = 0;
+    NSString *bindHost = @"";
 
     PSSpecifier *portSpec = nil;
     PSSpecifier *httpPortSpec = nil;
+    PSSpecifier *bindHostSpec = nil;
     for (PSSpecifier *sp in _specifiers) {
         NSString *key = [sp propertyForKey:@"key"];
         if (!key)
@@ -421,7 +452,9 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
             portSpec = sp;
         else if (!httpPortSpec && [key isEqualToString:@"HttpPort"])
             httpPortSpec = sp;
-        if (portSpec && httpPortSpec)
+        else if (!bindHostSpec && [key isEqualToString:@"BindHost"])
+            bindHostSpec = sp;
+        if (portSpec && httpPortSpec && bindHostSpec)
             break;
     }
 
@@ -439,12 +472,33 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
         httpPort = [(NSString *)httpPortVal intValue];
     }
 
+    id bindHostVal = bindHostSpec ? [self readPreferenceValue:bindHostSpec] : nil;
+    if ([bindHostVal isKindOfClass:[NSString class]]) {
+        bindHost = (NSString *)bindHostVal;
+    }
+
     BOOL portInvalid = (port < 1024 || port > 65535);
     BOOL httpInvalid = (httpPort != 0 && (httpPort < 1024 || httpPort > 65535));
     if (portInvalid || httpInvalid) {
         NSString *t = NSLocalizedStringFromTableInBundle(@"Invalid Port", @"Localizable", self.bundle, nil);
         NSString *msg = NSLocalizedStringFromTableInBundle(
             @"TCP/HTTP ports must be 1024..65535 (HTTP can be 0 to disable). The server will fallback to defaults.",
+            @"Localizable", self.bundle, nil);
+        NSString *ok = NSLocalizedStringFromTableInBundle(@"OK", @"Localizable", self.bundle, nil);
+
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:t
+                                                                       message:msg
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:ok style:UIAlertActionStyleCancel handler:nil]];
+
+        [self presentViewController:alert animated:YES completion:nil];
+        return; // do not restart now
+    }
+
+    if (!TVNCIsValidBindHostLiteral(bindHost)) {
+        NSString *t = NSLocalizedStringFromTableInBundle(@"Invalid Bind Address", @"Localizable", self.bundle, nil);
+        NSString *msg = NSLocalizedStringFromTableInBundle(
+            @"Bind address must be a valid IPv4/IPv6 literal, or empty to listen on all interfaces.",
             @"Localizable", self.bundle, nil);
         NSString *ok = NSLocalizedStringFromTableInBundle(@"OK", @"Localizable", self.bundle, nil);
 
@@ -507,7 +561,11 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
 }
 
 - (void)viewLogs {
+#if TARGET_IPHONE_SIMULATOR
+    NSString *logsPath = [NSHomeDirectory() stringByAppendingPathComponent:@"tmp/trollvnc-stderr.log"];
+#else
     NSString *logsPath = [self.jbrootPath stringByAppendingPathComponent:@"tmp/trollvnc-stderr.log"];
+#endif
 
     StripedTextTableViewController *logsVC = [[StripedTextTableViewController alloc] initWithPath:logsPath];
     logsVC.primaryColor = self.primaryColor;
@@ -542,13 +600,21 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
 }
 
 - (NSString *)cacertPath {
+#if TARGET_IPHONE_SIMULATOR
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.82flex.trollvnc.ca-cert.pem"];
+#else
     return [self.jbrootPath
         stringByAppendingPathComponent:@"var/mobile/Library/Preferences/com.82flex.trollvnc.ca-cert.pem"];
+#endif
 }
 
 - (NSString *)cakeyPath {
+#if TARGET_IPHONE_SIMULATOR
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.82flex.trollvnc.ca-key.pem"];
+#else
     return [self.jbrootPath
         stringByAppendingPathComponent:@"var/mobile/Library/Preferences/com.82flex.trollvnc.ca-key.pem"];
+#endif
 }
 
 - (void)exportCertificate {
@@ -752,7 +818,7 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
 }
 
 - (void)source {
-    NSURL *url = [NSURL URLWithString:@"https://github.com/OwnGoalStudio/TrollVNC"];
+    NSURL *url = [NSURL URLWithString:@"https://github.com/owngoal-dev/TrollVNC"];
     if ([[UIApplication sharedApplication] canOpenURL:url]) {
         [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
     }

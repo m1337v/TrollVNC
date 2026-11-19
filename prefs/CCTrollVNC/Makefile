@@ -14,4 +14,10 @@ CCTrollVNC_FRAMEWORKS += UIKit
 CCTrollVNC_PRIVATE_FRAMEWORKS += ControlCenterUIKit
 CCTrollVNC_INSTALL_PATH += /Library/ControlCenter/Bundles
 
+ifeq ($(THEOS_DEVICE_SIMULATOR),1)
+CCTrollVNC_CODESIGN_FLAGS += -f -s -
+else
+CCTrollVNC_CODESIGN_FLAGS += -S
+endif
+
 include $(THEOS_MAKE_PATH)/bundle.mk
